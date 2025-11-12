@@ -1,0 +1,17 @@
+{
+  "idf.port": "/dev/ttyACM0",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-bridge.cfg"
+  ],
+  "idf.customExtraVars": {
+    "OPENOCD_SCRIPTS": "/home/larry/.espressif/tools/openocd-esp32/v0.11.0-esp32-20221026/openocd-esp32/share/openocd/scripts",
+    "ESP_ROM_ELF_DIR": "/home/larry/.espressif/tools/esp-rom-elfs/20230113/",
+    "IDF_TARGET": "esp32s3"
+  },
+  "clangd.path": "/home/larry/.espressif/tools/esp-clang/15.0.0-23786128ae/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=/home/larry/.espressif/tools/xtensa-esp32s3-elf/esp-2022r1-11.2.0/xtensa-esp32s3-elf/bin/xtensa-esp32s3-elf-gcc",
+    "--compile-commands-dir=/home/larry/Documents/Projects/Treasure_Trove/OTA_template/build"
+  ]
+}

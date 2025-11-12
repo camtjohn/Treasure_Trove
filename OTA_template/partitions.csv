@@ -1,0 +1,10 @@
+# Partition Table for M5Stamp S3 (8MB flash)
+# Name,   Type, SubType, Offset,   Size, Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+otadata,  data, ota,     0xf000,   0x1000,
+phy_init, data, phy,     0x10000,  0x1000,
+# Two OTA app partitions (sized for >=4MB; works fine on 8MB devices)
+ota_0,    app,  ota_0,   0x110000, 0x1E0000,
+ota_1,    app,  ota_1,   0x2F0000, 0x1E0000,
+# SPIFFS / storage partition (adjust size/name if you need different storage)
+spiffs,   data, spiffs,  0x4D0000, 0x130000,
