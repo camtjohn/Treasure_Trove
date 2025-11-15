@@ -160,3 +160,9 @@ void Wifi__Start(void)
     ESP_LOGI(TAG, "Wifi starting...");
     wifi_init_sta();
 }
+
+/* Getter function to allow OTA module to access the WiFi event group */
+EventGroupHandle_t Wifi__GetEventGroup(void)
+{
+    return s_wifi_event_group;
+}
