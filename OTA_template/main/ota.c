@@ -8,15 +8,14 @@
 #include "esp_https_ota.h"
 
 #include "ota.h"
+#include "wifi.h"
+#include <inttypes.h>
 
 static const char *TAG = "ota";
 
-// OTA URL (change as needed). Example: https://jbar.dev/firmware.bin
 #define OTA_URL "https://192.168.0.112/firmware.bin"
 // #define OTA_URL "https://jbar.dev/firmware.bin"
 
-// Symbols created by EMBED_TXTFILES for TLS_Keys/ca.crt in main/CMakeLists.txt
-// The linker symbols are named like: _binary_<path_with_underscores>_start/_end
 extern const uint8_t _binary_ca_crt_start[];
 extern const uint8_t _binary_ca_crt_end[];
 
@@ -25,10 +24,9 @@ SemaphoreHandle_t startOTASemaphore = NULL;
 
 // Thread variables
 TaskHandle_t blockingTaskHandle_OTA = NULL;
-void blocking_thread_start_OTA(void *);
 
 // Private method prototypes
-static esp_err_t _http_event_handler(esp_http_client_event_t *evt)
+static esp_err_t _http_event_handler(esp_http_client_event_t *evt);
 static void download_image(void);
 static char* get_pem_from_cert(void);
 static void blocking_thread_start_OTA(void *pvParameters);
@@ -51,9 +49,9 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_HEADER:
         ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
         break;
-    case HTTP_EVENT_ON_HEADERS_COMPLETE:
-        ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADERS_COMPLETE");
-        break;
+    // case HTTP_EVENT_ON_HEADERS_COMPLETE:
+    //     ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADERS_COMPLETE");
+    //     break;
     case HTTP_EVENT_ON_DATA:
         ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
         break;
@@ -102,31 +100,91 @@ char* get_pem_from_cert(void) {
 }
 
  void download_image(void) {
-    ESP_LOGI(TAG, "Starting OTA");
+    ESP_LOGI(TAG, "Starting OTA download");
+
+    // Wait for Wi-Fi to be connected before attempting OTA
+    EventGroupHandle_t wifi_event_group = Wifi__GetEventGroup();
+    if (wifi_event_group == NULL) {
+        ESP_LOGE(TAG, "Wi-Fi event group not initialized");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Waiting for Wi-Fi connection...");
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                            pdFALSE,
+                                            pdFALSE,
+                                            pdMS_TO_TICKS(30000)); // 30 second timeout
+
+    if (!(bits & WIFI_CONNECTED_BIT)) {
+        ESP_LOGE(TAG, "Wi-Fi not connected (bits=0x%lx). OTA requires Wi-Fi.", (unsigned long)bits);
+        ESP_LOGE(TAG, "Check Wi-Fi logs above for connection details");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Wi-Fi connected ✓");
+    ESP_LOGI(TAG, "Proceeding with OTA from: %s", OTA_URL);
 
     // Log free heap to help diagnose allocation failures during OTA
     size_t free_heap_before = esp_get_free_heap_size();
-    ESP_LOGI(TAG, "Free heap before OTA: %u bytes", (unsigned)free_heap_before);
+    ESP_LOGI(TAG, "Free heap before OTA: %lu bytes", (unsigned long)free_heap_before);
 
     char* cert_pem = get_pem_from_cert();
+    if (cert_pem) {
+        ESP_LOGI(TAG, "Using embedded CA certificate for TLS verification");
+    } else {
+        ESP_LOGW(TAG, "No CA certificate available - cert verification disabled");
+    }
 
-    // Reduce buffer size to lower heap usage inside the http client / TLS stack.
-    // Default buffer is often 8k; using 2k or 4k reduces peak RAM needed.
+    // Buffer size is critical for OTA stability:
+    // - Too small (2KB) can cause incomplete reads and checksum failures
+    // - Too large wastes heap memory
+    // Using 4KB as a middle ground for reliable operation
     esp_http_client_config_t my_http_config = {
         .url = OTA_URL,
         .cert_pem = cert_pem,
         .keep_alive_enable = false,                         // disable keep-alive to free connection resources
-        .buffer_size = 2048,
-        .skip_cert_common_name_check = true,                // for local IP address server
+        .buffer_size = 4096,                                // 4KB buffer for better transfer reliability
+        .skip_cert_common_name_check = true,                // for jbar.dev with self-signed cert
         .event_handler = _http_event_handler,               // optional, for debug logging
-        .tls_dyn_buf_strategy = HTTP_TLS_DYN_BUF_RX_STATIC, // controls TLS buffer allocation
+        .timeout_ms = 30000,                                // 30 second timeout for large firmware transfers
     };
 
     // this line is added from simple OTA:
     esp_https_ota_config_t ota_config = {
         .http_config = &my_http_config,
+        .bulk_flash_erase = false,  // Erase as we go instead of all at once (saves RAM)
     };
-    ESP_LOGI(TAG, "Attempting to download update from %s", my_http_config.url);
+    ESP_LOGI(TAG, "Connecting to server...");
+
+    // Verify that an OTA update partition exists before starting
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+    if (next == NULL) {
+        ESP_LOGE(TAG, "Passive OTA partition not found (esp_ota_get_next_update_partition returned NULL)");
+        // Print available app partitions to help debugging
+        esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+        if (it == NULL) {
+            ESP_LOGE(TAG, "No application partitions found at all");
+        } else {
+            ESP_LOGI(TAG, "Application partitions present:");
+            do {
+                const esp_partition_t *p = esp_partition_get(it);
+                if (p) {
+                    /* Use PRI macros for portable formatting of uint32_t fields */
+                    ESP_LOGI(TAG, "  label=%s type=%d subtype=%d addr=0x%08" PRIx32 " size=0x%08" PRIx32,
+                             p->label ? p->label : "<none>", p->type, p->subtype,
+                             p->address, p->size);
+                }
+                it = esp_partition_next(it);
+            } while (it != NULL);
+            esp_partition_iterator_release(it);
+        }
+        if (cert_pem) free(cert_pem);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Target partition: offset=0x%08" PRIx32 ", size=0x%08" PRIx32, next->address, next->size);
+
     esp_err_t ret = esp_https_ota(&ota_config);
     
 
@@ -138,7 +196,24 @@ char* get_pem_from_cert(void) {
         ESP_LOGI(TAG, "OTA successful, restarting...");
         esp_restart();
     } else {
-        ESP_LOGE(TAG, "OTA failed. err=0x%x", ret);
+        ESP_LOGE(TAG, "OTA failed with error code 0x%x", ret);
+        
+        // Provide context on what might have gone wrong
+        const char *error_hint = "";
+        if (ret == 0xFFFFFFFF) {
+            // Common error for header/connection issues
+            error_hint = "  → Likely: Server unreachable, timeout, or certificate mismatch";
+        }
+        
+        ESP_LOGE(TAG, "Troubleshooting steps:");
+        ESP_LOGE(TAG, "  1. Verify server at %s is running and accessible", OTA_URL);
+        ESP_LOGE(TAG, "  2. Check if certificate matches (for HTTPS): use 'openssl s_client -connect <host>'");
+        ESP_LOGE(TAG, "  3. Try HTTP instead (dev-only, insecure): change #define OTA_URL to http://...");
+        ESP_LOGE(TAG, "  4. Verify Wi-Fi is connected: check logs for WIFI_CONNECTED_BIT");
+        ESP_LOGE(TAG, "  5. Current free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
+        if (error_hint[0]) {
+            ESP_LOGE(TAG, "%s", error_hint);
+        }
     }
 }
 

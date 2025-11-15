@@ -16,16 +16,20 @@ static const char *TAG = "blink";
 #define BUTTON_GPIO GPIO_NUM_0
 
 // Blink timings
-#define ON_MS  500
-#define OFF_MS 2000
+#define BLINK_MS  300
+#define OFF_MS 1000
 
 static void blink_task(void *arg)
 {
     (void)arg;
     while (1) {
-        gpio_set_level(BLINK_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(ON_MS));
-        gpio_set_level(BLINK_GPIO, 0);
+        for(int i = 0; i < FW_VERSION; i++) {
+            // Blink number of times equal to FW_VERSION
+            gpio_set_level(BLINK_GPIO, 1);
+            vTaskDelay(pdMS_TO_TICKS(BLINK_MS));
+            gpio_set_level(BLINK_GPIO, 0);
+            vTaskDelay(pdMS_TO_TICKS(BLINK_MS));
+        }
         vTaskDelay(pdMS_TO_TICKS(OFF_MS));
     }
 }

@@ -50,3 +50,12 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+*/build/*
+#for now, focus on ota
+archive/*
+Bluetooth/*
+i2c_simple/*
+project_template/*
+Wifi_access/*
+
